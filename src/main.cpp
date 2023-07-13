@@ -1,8 +1,7 @@
 #include <Arduino.h>
 #include <BleMouse.h>
-#include <JC_Button.h> 
 #include <TimerEvent.h>
-#include <FastLED.h>
+#include "driver/touch_pad.h "
 
 #define DEVICE_NAME "Logitech MJ-1000"
 
@@ -18,15 +17,12 @@
 #define MOUSE_TIMER_INTERVAL SECOND * 30
 #define SYSTEM_TIMER_INTERVAL SECOND * 5
 
-#define BUTTON_PIN 27
-#define LED_PIN 5
+#define DEBOUNCE_TIME SECOND * 1
 
-#define NUM_LEDS 1
-#define BRIGHTNESS 40
-#define COLOR_ACTIVATING CRGB::DarkGreen
-#define COLOR_DEACTIVATING CRGB::OrangeRed
-#define COLOR_RUNNING CRGB::RoyalBlue
-#define COLOR_ACTIVE CRGB::DarkGoldenrod
+// the following variables are unsigned longs because the time, measured in
+// milliseconds, will quickly become a bigger number than can be stored in an int.
+unsigned long button_time = 0;  
+unsigned long last_button_time = 0; 
 
 bool isMouseActive = false;
 bool wasConnectedBefore = false;
@@ -35,27 +31,19 @@ bool shouldCheckBluetooth = true;
 uint32_t cycleCounter = 0;
 
 BleMouse bleMouse(DEVICE_NAME);
-Button button(BUTTON_PIN);
-CRGB leds[NUM_LEDS];
 
 TimerEvent mouseTimer;
 TimerEvent systemCheckTimer;
 
-void setLED(CRGB::HTMLColorCode colorOn, uint8_t brightness = BRIGHTNESS)
-{
-  leds[0] = colorOn;
-  FastLED.setBrightness(brightness);
-  FastLED.show();
-}
 
-void blinkLED(CRGB::HTMLColorCode colorOn, int cycles = 3, int onTimespanMs = 500, int offTimespanMs = 250)
+void blinkLED( int cycles = 3, int onTimespanMs = 500, int offTimespanMs = 250)
 {
   for(int i=0;i<cycles;i++)
   {
-    setLED(colorOn);
+    digitalWrite(LED_BUILTIN, HIGH);
     delay(onTimespanMs);
 
-    setLED(CRGB::Black);
+    digitalWrite(LED_BUILTIN, LOW);
     delay(offTimespanMs);
   }
 }
@@ -66,7 +54,7 @@ void onExecuteMouseTimer(){
     shouldCheckBluetooth = false;
     if(isMouseActive)
     {
-      setLED(COLOR_RUNNING, 100);
+      blinkLED(6, 100, 50);
       int mouseSpeed = random(MIN_SPEED, MAX_SPEED);
       int distance = random(MIN_DISTANCE, MAX_DISTANCE);
       int x = (random(X_RANDOM_RANGE) - 1) * mouseSpeed;
@@ -82,7 +70,7 @@ void onExecuteMouseTimer(){
         Serial.println("Executing right click");
         bleMouse.click(MOUSE_RIGHT);
       }
-      setLED(COLOR_ACTIVE);
+      digitalWrite(LED_BUILTIN, HIGH);
       cycleCounter++;
     }
   }
@@ -100,12 +88,12 @@ void onSystemCheck()
     {
       wasConnectedBefore = true;
       Serial.println("Bluetooth connected!");
-      setLED(CRGB::Black);
+      digitalWrite(LED_BUILTIN, LOW);
       shouldCheckBluetooth = false;
     }
     else
     {
-      setLED(CRGB::Red);
+      digitalWrite(LED_BUILTIN, HIGH);
       if(wasConnectedBefore)
       {
         Serial.println("Bluetooth disconnected, resetting...");
@@ -122,22 +110,27 @@ void onSystemCheck()
 
 void updateMouseActive()
 {
-  const char* newState = isMouseActive ? "deactivating!" : "activating!";
-  Serial.printf("Button pressed - %s", newState);
-  isMouseActive = !isMouseActive;
-  if(isMouseActive)
+  button_time = millis();
+  if (button_time - last_button_time > DEBOUNCE_TIME)
   {
-    Serial.printf(" Update interval: %i ms", MOUSE_TIMER_INTERVAL);
-    blinkLED(COLOR_ACTIVATING, 5, 300, 100);
-    setLED(COLOR_ACTIVE);
+
+    const char* newState = isMouseActive ? "deactivating!" : "activating!";
+    Serial.printf("Button pressed - %s", newState);
+    isMouseActive = !isMouseActive;
+    if(isMouseActive)
+    {
+      Serial.printf(" Update interval: %i ms", MOUSE_TIMER_INTERVAL);
+      blinkLED(5, 300, 100);
+    }
+    else
+    {
+      blinkLED(3);
+      cycleCounter = 0;
+    }
+    Serial.println("");
+    Serial.println("-----------------------");
+    last_button_time = button_time;
   }
-  else
-  {
-    blinkLED(COLOR_DEACTIVATING, 3);
-    cycleCounter = 0;
-  }
-  Serial.println("");
-  Serial.println("-----------------------");
 }
 
 void setup()
@@ -145,24 +138,27 @@ void setup()
   Serial.begin(115200);
   Serial.printf("Starting BLE mouse, device name: '%s'\r\n", DEVICE_NAME);
   
-  FastLED.addLeds<NEOPIXEL, LED_PIN>(leds, NUM_LEDS);
-  FastLED.setBrightness(BRIGHTNESS);
-
   bleMouse.begin();
-  button.begin();
+
+  pinMode(LED_BUILTIN, OUTPUT);
+
+  esp_err_t return_value;
+  return_value = touch_pad_init();
+  if (return_value != ESP_OK) {
+    printf("Touch pad init error\n");
+  }
+  return_value = touch_pad_config(TOUCH_PAD_NUM1);
+  if (return_value != ESP_OK) {
+    printf("Touch pad config fail\n");
+  }
 
   mouseTimer.set(MOUSE_TIMER_INTERVAL, onExecuteMouseTimer);
+  touchAttachInterrupt(TOUCH_PAD_NUM1, updateMouseActive, 70000);
   systemCheckTimer.set(SYSTEM_TIMER_INTERVAL, onSystemCheck);
 }
 
 void loop()
 {
-  button.read();
-  if(button.wasReleased())
-  {
-    updateMouseActive();
-  }
-
   mouseTimer.update();
   systemCheckTimer.update();
 }
